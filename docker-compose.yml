@@ -1,0 +1,16 @@
+services:
+  examprep:
+    build: .
+    container_name: examprep
+    restart: unless-stopped
+    environment:
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
+      SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET in .env}
+      COOKIE_HTTPS_ONLY: ${COOKIE_HTTPS_ONLY:-1}
+    ports:
+      - "127.0.0.1:8015:8000"
+    volumes:
+      - ./data:/srv/examprep/data
+      - ./private/scripts:/srv/examprep/private/scripts
+      - ./import:/srv/examprep/import:ro
