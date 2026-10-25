@@ -7,6 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 import markdown
+import ssl
 
 BASE = Path(__file__).resolve().parent.parent
 DATA = Path(os.getenv('DATA_DIR', BASE / 'data'))
