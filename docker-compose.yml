@@ -9,8 +9,15 @@ services:
       SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET in .env}
       COOKIE_HTTPS_ONLY: ${COOKIE_HTTPS_ONLY:-1}
     ports:
-      - "127.0.0.1:8015:8000"
+      - "0.0.0.0:8000:8000"
     volumes:
       - ./data:/srv/examprep/data
       - ./private/scripts:/srv/examprep/private/scripts
       - ./import:/srv/examprep/import:ro
+    networks:
+      - proxy
+      - demo
+networks:
+  demo:
+  proxy:
+    external: true
