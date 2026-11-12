@@ -1,0 +1,2 @@
+{% set path = '/script/' ~ s.token ~ '/' ~ (s.filename[33:]|urlencode) %}
+<div class="wget" data-wget="{{ path }}"><code>wget {{ request.base_url|string|trim('/') }}{{ path }}</code><button type="button" class="btn btn-quiet">Копировать</button></div>

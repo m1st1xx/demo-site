@@ -5,6 +5,7 @@ from fastapi import FastAPI, Request, Form, UploadFile, File, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.concurrency import run_in_threadpool
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 import markdown
 import ssl
@@ -83,14 +84,14 @@ def unlock(request: Request, key: str=Form(...)):
 def lock(request: Request):
     request.session.pop('full_access',None); return RedirectResponse('/',status_code=303)
 
-@app.get('/script/{token}')
-def get_script(request: Request, token: str):
+# wget не передаёт cookie браузера: доступ даёт секретный token, а name нужен, чтобы wget сохранил файл под обычным именем
+@app.get('/script/{token}/{name}')
+def get_script(token: str, name: str):
     with db() as c: s=c.execute('SELECT * FROM scripts WHERE token=? AND published=1',(token,)).fetchone()
     if not s: raise HTTPException(404,'Скрипт не найден')
-    if not has_full(request): return RedirectResponse('/unlock',status_code=303)
     path=PRIVATE / s['filename']
     if not path.is_file(): raise HTTPException(404,'Файл недоступен')
-    return FileResponse(path, filename=s['filename'], media_type='application/octet-stream')
+    return FileResponse(path, media_type='text/plain; charset=utf-8')
 
 @app.get('/admin/login',response_class=HTMLResponse)
 def admin_login(request: Request): return render('admin_login.html',request,error=None)
@@ -106,7 +107,7 @@ def admin(request: Request):
     require_admin(request)
     with db() as c:
         articles=c.execute('SELECT * FROM articles ORDER BY id DESC').fetchall(); scripts=c.execute('SELECT * FROM scripts ORDER BY id DESC').fetchall(); keys=c.execute('SELECT * FROM access_keys ORDER BY id DESC').fetchall()
-    return render('admin.html',request,articles=articles,scripts=scripts,keys=keys,new_key=request.session.pop('new_key',None))
+    return render('admin.html',request,articles=articles,scripts=scripts,keys=keys,new_key=request.session.pop('new_key',None),flash=request.session.pop('flash',None))
 
 @app.post('/admin/article/save')
 def save_article(request: Request, title: str=Form(...), slug: str=Form(''), summary: str=Form(''), public_md: str=Form(''), full_md: str=Form(''), published: str | None=Form(None), article_id: int=Form(0)):
@@ -136,7 +137,7 @@ async def save_script(request: Request, title: str=Form(...), summary: str=Form(
         (PRIVATE/filename).write_bytes(content)
         if script_id: c.execute('UPDATE scripts SET title=?,summary=?,filename=?,public_text=?,updated_at=? WHERE id=?',(title,summary,filename,public_text,now(),script_id))
         else: c.execute('INSERT INTO scripts(slug,title,summary,filename,public_text,token,published,updated_at) VALUES(?,?,?,?,?,?,1,?)',(slugify(title)+'-'+secrets.token_hex(3),title,summary,filename,public_text,token,now()))
-    return RedirectResponse('/admin',status_code=303)
+    return RedirectResponse('/admin#scripts',status_code=303)
 @app.post('/admin/script/delete/{sid}')
 def delete_script(request: Request,sid:int):
     require_admin(request)
@@ -146,42 +147,67 @@ def delete_script(request: Request,sid:int):
             try: (PRIVATE/s['filename']).unlink(missing_ok=True)
             except OSError: pass
             c.execute('DELETE FROM scripts WHERE id=?',(sid,))
-    return RedirectResponse('/admin',status_code=303)
+    return RedirectResponse('/admin#scripts',status_code=303)
 
 @app.post('/admin/key/create')
 def create_key(request: Request,label: str=Form(''), days: int=Form(0), max_uses: int=Form(1)):
     require_admin(request); key=secrets.token_urlsafe(18); expires=(datetime.now(timezone.utc)+timedelta(days=days)).isoformat() if days>0 else None
     with db() as c: c.execute('INSERT INTO access_keys(key_hash,label,expires_at,max_uses,uses,revoked,created_at) VALUES(?,?,?,?,0,0,?)',(hash_key(key),label,expires,max(1,min(max_uses,1000)),now()))
-    request.session['new_key']=key; return RedirectResponse('/admin',status_code=303)
+    request.session['new_key']=key; return RedirectResponse('/admin#keys',status_code=303)
 @app.post('/admin/key/revoke/{kid}')
 def revoke_key(request: Request,kid:int):
     require_admin(request)
     with db() as c: c.execute('UPDATE access_keys SET revoked=1 WHERE id=?',(kid,))
-    return RedirectResponse('/admin',status_code=303)
+    return RedirectResponse('/admin#keys',status_code=303)
 
 @app.get('/health')
 def health(): return {'status':'ok'}
 
+MAX_ARCHIVE=200*1024*1024
+
+def import_zip(fileobj, archive_name):
+    """README.md -> статья, *.sh -> скрипты, docs/images -> картинки. Повторный импорт обновляет уже существующее."""
+    with zipfile.ZipFile(fileobj) as z:
+        infos=[i for i in z.infolist() if not i.is_dir() and '__MACOSX' not in i.filename and not Path(i.filename).name.startswith('.')]
+        if sum(i.file_size for i in infos)>5*MAX_ARCHIVE: raise ValueError('после распаковки архив занимает больше 1 ГБ')
+        readme=min((i.filename for i in infos if Path(i.filename).name=='README.md'),key=len,default=None)
+        text=z.read(readme).decode('utf-8','replace') if readme else ''
+        m=re.search(r'^#\s+(.+)$',text,re.M)
+        title=m.group(1).strip() if m else Path(archive_name).stem
+        if m: text=text.replace(m.group(0),'',1).lstrip()  # заголовок уже выводится как название статьи
+        slug=slugify(title); n_scripts=n_images=0
+        # у каждой статьи своя папка картинок, иначе 01.png из разных архивов затирают друг друга
+        text=re.sub(r'(?:\./)?docs/images/',f'/media/{slug}/',text)
+        with db() as c:
+            if readme:
+                public=text[:2500]+'\n\n> Полная версия доступна по ключу.'
+                if not c.execute('UPDATE articles SET title=?,public_md=?,full_md=?,updated_at=? WHERE slug=?',(title,public,text,now(),slug)).rowcount:
+                    c.execute('INSERT INTO articles(slug,title,summary,public_md,full_md,published,updated_at) VALUES(?,?,?,?,?,1,?)',(slug,title,'',public,text,now()))
+            for i in infos:
+                name=Path(i.filename).name
+                if name.endswith('.sh'):
+                    # имя файла уникально на весь сайт: тот же br-rtr.sh заменяет содержимое, ссылка остаётся прежней
+                    old=c.execute('SELECT filename FROM scripts WHERE substr(filename,34)=?',(name,)).fetchone()
+                    fn=old['filename'] if old else secrets.token_hex(16)+'_'+name
+                    (PRIVATE/fn).write_bytes(z.read(i))
+                    if old: c.execute('UPDATE scripts SET updated_at=? WHERE filename=?',(now(),fn))
+                    else: c.execute('INSERT INTO scripts(slug,title,summary,filename,public_text,token,published,updated_at) VALUES(?,?,?,?,?,?,1,?)',(slugify(name[:-3])+'-'+secrets.token_hex(3),name[:-3].upper(),'Скрипт автоматизации для соответствующей виртуальной машины.',fn,'',secrets.token_urlsafe(24),now()))
+                    n_scripts+=1
+                elif 'docs/images/' in i.filename and name.lower().endswith(('.png','.jpg','.jpeg','.webp')):
+                    (UPLOADS/slug).mkdir(exist_ok=True); (UPLOADS/slug/name).write_bytes(z.read(i)); n_images+=1
+    return f'Архив импортирован: {"статья «"+title+"», " if readme else "README.md не найден, статья не создана, "}скриптов — {n_scripts}, изображений — {n_images}.'
+
 @app.post('/admin/import-bundle')
-def import_bundle(request: Request):
-    require_admin(request)
-    # Import the provided repository zip from the optional /import folder, if mounted by the operator.
-    zpath=BASE/'import'/'ebem-demo_full-main.zip'
-    if not zpath.exists(): return RedirectResponse('/admin?import=missing',status_code=303)
-    with zipfile.ZipFile(zpath) as z:
-        names=z.namelist(); readme=next((n for n in names if n.endswith('/README.md')),None)
-        if readme:
-            text=z.read(readme).decode('utf-8','replace').replace('docs/images/','/media/')
-            # Create a source-based starter article; administrator can split/edit it from the panel.
-            with db() as c:
-                if not c.execute('SELECT 1 FROM articles WHERE slug=?',('podgotovka-stenda',)).fetchone():
-                    c.execute('INSERT INTO articles(slug,title,summary,public_md,full_md,published,updated_at) VALUES(?,?,?,?,?,?,?)',('podgotovka-stenda','Подготовка стенда','Методичка по подготовке VMware, Debian и виртуальных машин.',text[:2500]+'\n\n> Полная версия доступна по ключу.',text,1,now()))
-                for n in names:
-                    if n.endswith('.sh'):
-                        raw=z.read(n); orig=Path(n).name; fn=secrets.token_hex(16)+'_'+orig; (PRIVATE/fn).write_bytes(raw)
-                        title=orig[:-3].upper().replace('-','-')
-                        if not c.execute('SELECT 1 FROM scripts WHERE title=?',(title,)).fetchone():
-                            c.execute('INSERT INTO scripts(slug,title,summary,filename,public_text,token,published,updated_at) VALUES(?,?,?,?,?,?,1,?)',(slugify(title),title,'Скрипт автоматизации для соответствующей виртуальной машины.',''+fn,'# Открытая версия\n\nПолный скрипт доступен после активации ключа.',secrets.token_urlsafe(24),now()))
-                    elif '/docs/images/' in n and n.lower().endswith(('.png','.jpg','.jpeg','.webp')):
-                        dest=UPLOADS/Path(n).name; dest.write_bytes(z.read(n))
-    return RedirectResponse('/admin',status_code=303)
+async def import_bundle(request: Request):
+    require_admin(request)  # до разбора тела: аноним не должен заливать сотни мегабайт во временные файлы
+    if int(request.headers.get('content-length') or 0)>MAX_ARCHIVE: msg='Ошибка: архив больше 200 МБ.'
+    else:
+        archive=(await request.form()).get('archive')
+        if not getattr(archive,'filename',None): msg='Ошибка: файл не выбран.'
+        elif archive.size>MAX_ARCHIVE: msg='Ошибка: архив больше 200 МБ.'
+        else:
+            try: msg=await run_in_threadpool(import_zip,archive.file,archive.filename)
+            except zipfile.BadZipFile: msg='Ошибка: файл не является zip-архивом.'
+            except ValueError as e: msg=f'Ошибка: {e}.'
+    request.session['flash']=msg
+    return RedirectResponse('/admin#archive',status_code=303)

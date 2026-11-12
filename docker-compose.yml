@@ -13,7 +13,6 @@ services:
     volumes:
       - ./data:/srv/examprep/data
       - ./private/scripts:/srv/examprep/private/scripts
-      - ./import:/srv/examprep/import:ro
     networks:
       - proxy
       - demo
