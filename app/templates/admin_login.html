@@ -1,1 +1,13 @@
-{% extends 'base.html' %}{% block title %}Вход администратора — ExamPrep{% endblock %}{% block content %}<section class="login-card"><div class="eyebrow">УПРАВЛЕНИЕ САЙТОМ</div><h1>Вход в админ-панель</h1><p>Войди с учётными данными администратора.</p>{% if error %}<div class="error">{{ error }}</div>{% endif %}<form method="post" class="stack"><label>Логин<input name="username" required autocomplete="username"></label><label>Пароль<input type="password" name="password" required autocomplete="current-password"></label><button class="btn">Войти →</button></form></section>{% endblock %}
+{% extends 'base.html' %}
+{% block title %}Вход администратора — ExamPrep{% endblock %}
+{% block content %}
+<section class="panel auth">
+  <h1>Вход в админ-панель</h1>
+  {% if error %}<div class="notice notice-error">{{ error }}</div>{% endif %}
+  <form method="post" class="stack">
+    <label>Логин<input name="username" required autocomplete="username" autofocus></label>
+    <label>Пароль<input type="password" name="password" required autocomplete="current-password"></label>
+    <button class="btn">Войти</button>
+  </form>
+</section>
+{% endblock %}

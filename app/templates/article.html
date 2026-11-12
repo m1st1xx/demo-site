@@ -1,1 +1,15 @@
-{% extends 'base.html' %}{% block title %}{{ article.title }} — ExamPrep{% endblock %}{% block content %}<div class="article-layout"><aside class="article-side"><a href="/">← Все материалы</a><div class="side-label">МАТЕРИАЛ</div><strong>{{ article.title }}</strong>{% if locked %}<div class="locked-card"><span>🔒</span><b>Полная версия</b><p>Введи ключ, чтобы увидеть полный текст и команды.</p><a class="btn btn-small" href="/unlock">Разблокировать</a></div>{% endif %}</aside><article class="article"><div class="eyebrow">ИНСТРУКЦИЯ · EXAMPREP</div><h1>{{ article.title }}</h1><p class="lead">{{ article.summary }}</p>{% if locked %}<div class="notice"><b>Это открытая версия материала.</b><p>Некоторые шаги и команды доступны только в полном варианте.</p><a href="/unlock">Получить полный вариант →</a></div>{% endif %}<div class="markdown">{{ body|safe }}</div><div class="article-end"><a href="/">← Вернуться к материалам</a>{% if not full %}<a href="/unlock">Открыть полный вариант →</a>{% endif %}</div></article></div>{% endblock %}
+{% extends 'base.html' %}
+{% block title %}{{ article.title }} — ExamPrep{% endblock %}
+{% block content %}
+<article class="wrap narrow">
+  <a class="back" href="/">← Все материалы</a>
+  <h1>{{ article.title }}</h1>
+  {% if article.summary %}<p class="lead">{{ article.summary }}</p>{% endif %}
+  {% if locked %}<div class="notice">Это открытая версия. Полный текст и команды доступны <a href="/unlock">по ключу</a>.</div>{% endif %}
+  <div class="markdown">{{ body|safe }}</div>
+  <div class="article-end">
+    <a href="/">← Все материалы</a>
+    {% if locked %}<a href="/unlock">Открыть полную версию →</a>{% endif %}
+  </div>
+</article>
+{% endblock %}
